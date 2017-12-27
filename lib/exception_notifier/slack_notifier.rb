@@ -21,70 +21,62 @@ module ExceptionNotifier
       @notifier ||= Slack::Notifier.new slack_options.fetch(:webhook_url)
     end
 
-    def extract_data_from_options(options)
-      options.fetch(:data, {}).tap do |data|
-        data.merge!(error_data_for_request(options))
-        data.merge!(error_data_for_rails)
-      end
-    end
-
     # see https://api.slack.com/docs/formatting
     # see https://api.slack.com/incoming-webhooks
     def message_options(exception, opts)
-      data = extract_data_from_options(opts)
-      DEFAULT_OPTIONS.merge(slack_options).merge(opts).slice(:channel, :username, :icon_emoji).tap do |options|
-        options[:attachments] = [{
-          color: 'danger',
-          title: exception.message,
-          text: exception_backtrace(exception),
-          fallback: data_to_text(data),
-          fields: attachment_fields(data),
-          mrkdwn_in: %w(text title fallback fields)
-        }]
-      end
-    end
+      env = opts.fetch(:env, {})
+      request = env['REQUEST_METHOD'].blank? ? false : ActionDispatch::Request.new(env)
 
-    def data_to_text(data)
-      data.map do |key, value|
-        [key, value].join(': ')
-      end.join("\n")
+      option_for_attachments = {
+        color: 'danger',
+        title: exception.message,
+        fields: attachment_fields(exception, request),
+        mrkdwn_in: %w(text title fallback fields)
+      }
+      option_for_attachments[:text] = current_url(request) if request
+
+      DEFAULT_OPTIONS.merge(slack_options).merge(opts).slice(:channel, :username, :icon_emoji).tap do |options|
+        options[:attachments] = [option_for_attachments]
+      end
     end
 
     # see https://api.slack.com/docs/attachments
-    def attachment_fields(data)
-      data.map do |key, value|
-        attachment_field(key, value.to_s, short: false)
+    def attachment_fields(exception, request = nil)
+      fields = []
+
+      if defined?(Rails)
+        fields << attachment_field('Project', Rails.application.class.parent_name, short: true)
+        fields << attachment_field('Environment', Rails.env, short: true)
       end
+
+      fields << attachment_field('Backtrace', exception_backtrace(exception))
+
+      if request
+        fields << attachment_field('Data', additional_data(request.env.fetch('exception_notifier.exception_data', {})))
+        fields << attachment_field('Parameters', additional_data(request.filtered_parameters))
+      end
+
+      fields
     end
 
     def attachment_field(title, value, short: false)
-      {
-        title: title,
-        value: value,
-        short: short
-      }
+      { title: title, value: value, short: short }
     end
 
     def exception_backtrace(exception)
       clean_backtrace(exception).first(10).join("\n")
     end
 
-    def error_data_for_rails
-      return {} unless defined?(Rails)
-      {
-        'Project' => Rails.application.class.parent_name,
-        'Environment' => Rails.env
-      }
+    def exception_backtrace(exception)
+      clean_backtrace(exception).first(10).map { |s| "> #{s}" }.join("\n")
     end
 
-    def error_data_for_request(options)
-      env = options.fetch(:env, {})
-      return {} unless env['REQUEST_METHOD']
-      request = ActionDispatch::Request.new(env)
-      request.env.fetch('exception_notifier.exception_data', {}).merge(
-        request.request_method => request.original_url,
-        'Parameters' => request.filtered_parameters.map { |k, v| "> *#{k}*: #{v}" }.join("\n")
-      )
+    def current_url(request)
+      "*#{request.request_method}* #{request.original_url}"
+    end
+
+    def additional_data(parameters)
+      parameters.map { |key, value| ">  *#{key}*: #{value}" }.join("\n")
     end
   end
 end
