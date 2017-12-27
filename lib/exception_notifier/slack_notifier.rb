@@ -38,7 +38,8 @@ module ExceptionNotifier
           title: exception.message,
           text: exception_backtrace(exception),
           fallback: data_to_text(data),
-          fields: attachment_fields(data)
+          fields: attachment_fields(data),
+          mrkdwn_in: %w(text title fallback fields)
         }]
       end
     end
@@ -81,8 +82,8 @@ module ExceptionNotifier
       return {} unless env['REQUEST_METHOD']
       request = ActionDispatch::Request.new(env)
       request.env.fetch('exception_notifier.exception_data', {}).merge(
-        'Request Method' => request.request_method,
-        'Request URL' => request.original_url
+        request.request_method => request.original_url,
+        'Parameters' => request.filtered_parameters.map { |k, v| "> *#{k}*: #{v}" }.join("\n")
       )
     end
   end
